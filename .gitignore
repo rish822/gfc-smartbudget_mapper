@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# App state / local prefs
+.mapper_prefs.json
+
+# Project I/O — keep client GFC/BOQ files out of the public repo
+data/
+output/
+*.xlsx
+*.xls
+!sample/*.xlsx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
