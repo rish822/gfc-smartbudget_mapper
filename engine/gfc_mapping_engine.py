@@ -30,6 +30,7 @@ from typing import Optional
 # Engine 1 and Engine 2 — imported here, used in process_gfc
 from .gfc_classifier import ClassificationResult, classify_line_item
 from .boq_matcher import best_match, MATCH_THRESHOLDS   # re-exported for gui + output_builder
+from . import image_classifier as _img_mod
 
 __all__ = [
     "classify_sheet", "SHEET_RULES", "SKIP_TOKENS",
@@ -526,6 +527,11 @@ class EnrichedLine:
     pr_ready:            bool = False
     pr_blocker:          str = ""
 
+    # Vision enrichment (Signal 5) — populated when vision_enabled=True and confidence < 75
+    vision_subcategory:  Optional[str] = None
+    vision_confidence:   int = 0
+    vision_reason:       str = ""
+
 
 # ============================================================
 # ORCHESTRATOR
@@ -537,6 +543,8 @@ def process_gfc(
     category_master: list[dict],
     limit_sheets: Optional[int] = None,
     run_match: bool = True,
+    vision_enabled: bool = False,
+    vision_api_key: Optional[str] = None,
 ) -> list[EnrichedLine]:
     """
     Two-engine pipeline:
@@ -557,6 +565,12 @@ def process_gfc(
 
     wb      = openpyxl.load_workbook(gfc_path, data_only=True, read_only=True)
     results: list[EnrichedLine] = []
+
+    # Vision: extract all sheet images upfront (fast zip parse, no PIL decoding yet)
+    _all_images: dict[str, dict[int, tuple]] = {}
+    _vision_calls = 0
+    if vision_enabled:
+        _all_images = _img_mod.extract_all_images(gfc_path, list(wb.sheetnames))
 
     for sheet_idx, sheet_name in enumerate(wb.sheetnames):
         if limit_sheets and sheet_idx >= limit_sheets:
@@ -683,6 +697,44 @@ def process_gfc(
                 el.classification_confidence = clf.confidence
                 el.classification_method    = clf.method
                 el.classification_signals   = " | ".join(clf.signals)
+
+                # ── VISION (Signal 5): image-based sub-cat refinement ─────────
+                # Triggered only for MEDIUM/LOW confidence and when an image is
+                # available for this row.  Hard-capped at MAX_IMAGE_CALLS per run.
+                if (vision_enabled
+                        and el.master_category
+                        and clf.confidence < _img_mod.IMAGE_THRESHOLD
+                        and _vision_calls < _img_mod.MAX_IMAGE_CALLS):
+                    img_data = _all_images.get(sheet_name, {}).get(r_offset)
+                    if img_data:
+                        img_bytes, img_ext = img_data
+                        valid_subs = {
+                            m.get("Sub-category", "").strip()
+                            for m in cat_master if m.get("Sub-category")
+                        } - {""}
+                        v_sub, v_conf, v_why = _img_mod.classify_image(
+                            img_bytes,
+                            el.master_category,
+                            valid_subs,
+                            description=el.raw_description,
+                            image_ext=img_ext,
+                            api_key=vision_api_key,
+                        )
+                        _vision_calls += 1
+                        el.vision_subcategory = v_sub
+                        el.vision_confidence  = v_conf
+                        el.vision_reason      = v_why
+                        # Accept vision result when:
+                        #   (a) Engine 1 found no sub-category, or
+                        #   (b) Vision is ≥10 points more confident
+                        if v_sub and (
+                            not el.master_subcategory
+                            or v_conf >= clf.confidence + 10
+                        ):
+                            el.master_subcategory        = v_sub
+                            el.classification_confidence = v_conf
+                            el.classification_method     = "vision"
+                            el.classification_signals   += f" | vision({v_why})"
 
                 # ── ENGINE 2: match against BOQ (skipped when run_match=False) ─
                 if run_match and budget:
