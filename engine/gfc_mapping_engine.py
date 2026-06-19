@@ -721,10 +721,11 @@ def process_gfc(
                 else:
                     el.match_status = "— (Engine 1 only)"
 
-                # PR readiness (GF5.1)
+                # PR readiness (GF5.1).  Uses el.match_status so it is correct
+                # whether or not the Engine 2 matching pass ran.
                 blockers = []
-                if status != "🟢 Matched":
-                    blockers.append(f"match={status}")
+                if el.match_status != "🟢 Matched":
+                    blockers.append(f"match={el.match_status}")
                 if el.norm_status != "Client Approved":
                     blockers.append(f"status={el.norm_status}")
                 if not (el.raw_qty_ops or el.raw_qty_design):
