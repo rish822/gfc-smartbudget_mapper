@@ -13,14 +13,15 @@ CORE PRINCIPLE (enforced strictly):
 
 Pipeline per line item:
   STEP 0  Category overrides   — material/context rules that switch the category
-                                 (e.g. wall tile→CIVIL, glass door→PARTITIONS,
-                                  laminate-on-furniture→SURFACE AND FINISHES)
   STEP 1  Determine valid sub-categories for the (possibly overridden) category
   STEP 2  Four signals propose a sub-category — ALL constrained to that category
+            Signal 2 uses DESCRIPTION + PRODUCT_NAME only (no sub_hint) to
+            prevent the sheet hint name from contaminating keyword matches.
   STEP 3  Hard guard: drop any proposed sub-category not valid for the category
+  STEP 4  Special area-based hint for ACOUSTIC and PAINT categories
 
 Four signals (highest → lowest priority):
-  Signal 1  Row-level explicit hint   ("Furniture Type" column)        conf 92
+  Signal 1  Row-level explicit hint   ("Furniture Type" / "Wall/Ceiling" col) conf 92
   Signal 2  Phrase keyword match      (category-scoped phrase list)    conf 65–90
   Signal 3  Master item-name match    (stemmed overlap vs that category) conf 40–82
   Signal 4  Sheet-level sub_hint      (from SHEET_RULES L1)            conf 65
@@ -54,22 +55,41 @@ def _light_stem(tok: str) -> str:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # AUTHORITATIVE TAXONOMY — valid sub-categories per category (from Category Master)
-# Used as the hard constraint when the live master slice is unavailable, and to
-# sanity-check the category-scoped phrase lists below.
+# Updated to match "Final Category Master.xlsx"
 # ══════════════════════════════════════════════════════════════════════════════
 MASTER_SUBCATS: dict[str, set] = {
     "ACOUSTIC":             {"CEILING", "LIGHTS", "PARTITION", "WALL SOLUTIONS"},
     "CEILING":              {"DECORATIVE CEILING", "GYPSUM CEILING", "METAL CEILING", "WOOD CEILING"},
-    "CIVIL":                {"COUNTER TOPS", "DADO TILE", "FABRICATION", "SANITARY FIXTURES"},
+    "CIVIL":                {"COUNTER TOPS", "DADO TILE", "DEMOLITION AND DISMANTLING",
+                             "FABRICATION", "MASONARY WORKS", "PLUMBING",
+                             "SANITARY FIXTURES", "WET WORKS"},
     "DECORATIVES":          {"ACOUSTIC WALL SOLUTIONS", "ARTIFACTS AND ACCESSORIES", "BLIND",
                              "GRAPHICS", "PANELLING", "SIGNAGES AND BRANDING",
                              "SKIRTING AND PROFILE", "UTILITIES", "WALL CLADDING"},
-    "FLOORING":             {"RESILIENT FLOORING", "TEXTILE FLOORING", "TILE FLOORING"},
+    "DESIGN & MAINTENANCE": {"DESIGN", "MAINTENANACE"},
+    "ELECTRICAL AND NETWORKING": {
+        "CABLE TRAY & RACEWAYS", "CIRCUIT WIRING", "EARTHING SYSTEM",
+        "ELECTRICAL STANDARD", "LT CABLES", "NETWORKING", "POINT WIRING",
+        "POWER OUTLETS & WIRING", "POWER PANELS & DBS", "SUBMAINS",
+        "SUBMAINS & POINT WIRING", "TERMINATION",
+        "WORKSTATION SWITCHSOCKET WITH BACKBOX"},
+    "FIRE AND SECURITY WORK": {
+        "ACCESS CONTROL SYSTEM", "CCTV SYSTEM", "FIRE ALARM SYSTEM",
+        "FIRE EXTINGUISHER AND CLEAN AGENT", "FIRE SIGNAGES", "PA SYSTEM",
+        "SPRINKLER SYSTEMS"},
+    "FLOORING":             {"FLOOR LEVELLING", "RAISED FLOORING", "RESILIENT FLOORING",
+                             "TEXTILE FLOORING", "TILE FLOORING"},
     "FURNITURE":            {"CHAIRS", "CUSTOM FURNITURE", "DESIGN & ACCESSORIES",
                              "LOOSE FURNITURE", "MODULAR FURNITURE"},
+    "HVAC WORK":            {
+        "AC UNIT", "AHU", "ATC CABLE", "AUTO SEQUENTIAL PANEL", "CHILLER",
+        "DIGITAL THERMOSTAT", "DUCTABLE_LOW SIDE", "DUCTABLE_LOW SIDE_INSULATION",
+        "ELECTRICAL WORK", "HIGH SIDE WORKS", "HVAC STANDARD", "INSTALLATION",
+        "LOW SIDE WORKS"},
     "LIGHTING":             {"ACOUSTIC LIGHTS", "AMBIENT LIGHTS", "ARCHITECTURAL LIGHTS",
                              "DECORATIVE LIGHTS"},
-    "PAINT":                {"CEILING PAINT", "WALL PAINT", "DUCO PAINT", "DUCT PAINT", "TEXTURE PAINT"},
+    "PAINT":                {"CEILING PAINT", "DUCO PAINT", "DUCT PAINT",
+                             "TEXTURE PAINT", "WALL PAINT"},
     "PARTITIONS AND DOORS": {"DOORS", "GLASS PARTITION", "PARTITION", "WINDOWS"},
     "SURFACE AND FINISHES": {"WOODEN"},
 }
@@ -99,13 +119,13 @@ _CATEGORY_OVERRIDES: list[tuple[str, Optional[tuple], str, str]] = [
     ("vitrified dado", None, "CIVIL", "DADO TILE"),
 
     # ── Doors by material ──────────────────────────────────────────────────
-    # Glass / Aluminium doors → PARTITIONS AND DOORS / DOORS (regardless of sheet).
-    # Wooden / flush / carpentry doors are NOT overridden here — they stay in
-    # their sheet category (FURNITURE) and resolve to CUSTOM FURNITURE.
     ("glass door",     None, "PARTITIONS AND DOORS", "DOORS"),
     ("aluminium door", None, "PARTITIONS AND DOORS", "DOORS"),
     ("aluminum door",  None, "PARTITIONS AND DOORS", "DOORS"),
     ("toughened glass door", None, "PARTITIONS AND DOORS", "DOORS"),
+    ("washroom door",  None, "PARTITIONS AND DOORS", "DOORS"),
+    ("toilet door",    None, "PARTITIONS AND DOORS", "DOORS"),
+    ("wc door",        None, "PARTITIONS AND DOORS", "DOORS"),
 
     # ── Solid-surface finishes ─────────────────────────────────────────────
     ("corian",         None, "SURFACE AND FINISHES", "WOODEN"),
@@ -113,9 +133,6 @@ _CATEGORY_OVERRIDES: list[tuple[str, Optional[tuple], str, str]] = [
     ("solid surface",  None, "SURFACE AND FINISHES", "WOODEN"),
 
     # ── Laminate / Fluted panel / Veneer APPLIED ON a furniture piece ──────
-    # (reception table, conference table, book shelf, etc.) → SURFACE AND FINISHES.
-    # Requires a furniture noun to also be present so wall/ceiling panelling is
-    # NOT swept in (that stays DECORATIVES / PANELLING).
     ("laminate",   _FURNITURE_NOUNS, "SURFACE AND FINISHES", "WOODEN"),
     ("laminated",  _FURNITURE_NOUNS, "SURFACE AND FINISHES", "WOODEN"),
     ("fluted",     _FURNITURE_NOUNS, "SURFACE AND FINISHES", "WOODEN"),
@@ -127,15 +144,15 @@ _CATEGORY_OVERRIDES: list[tuple[str, Optional[tuple], str, str]] = [
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 2, Signal 2 — CATEGORY-SCOPED phrase → sub-category lookup.
-# Phrases are grouped by category.  When classifying a line item we ONLY scan the
-# phrase block for that item's determined category, so a sub-category can never
-# leak in from another category.  Every value is a valid sub-category of its
-# parent category in MASTER_SUBCATS above.
+# KEY DESIGN: These phrases are matched against DESCRIPTION + PRODUCT_NAME only
+# (sub_hint / sheet name is EXCLUDED from Signal 2).  This prevents the sheet
+# hint value (e.g. "METAL CEILING", "PARTITION") from accidentally triggering a
+# keyword match that overrides the sheet hint in the wrong direction.
 # ══════════════════════════════════════════════════════════════════════════════
 _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
 
     "FURNITURE": [
-        # MODULAR FURNITURE
+        # MODULAR FURNITURE — workstations, meeting/conference tables, pedestals
         ("workstation partition",   "MODULAR FURNITURE"),
         ("linear workstation",      "MODULAR FURNITURE"),
         ("l-shape workstation",     "MODULAR FURNITURE"),
@@ -152,7 +169,6 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("folding table",           "MODULAR FURNITURE"),
         ("high table",              "MODULAR FURNITURE"),
         ("high stand table",        "MODULAR FURNITURE"),
-        ("cafeteria",               "MODULAR FURNITURE"),
         ("3 drawer pedestal",       "MODULAR FURNITURE"),
         ("pedestal drawers",        "MODULAR FURNITURE"),
         ("pedestal body",           "MODULAR FURNITURE"),
@@ -193,12 +209,6 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("dummy boxing",            "CUSTOM FURNITURE"),
         ("modesty",                 "CUSTOM FURNITURE"),
         ("shutter",                 "CUSTOM FURNITURE"),
-        ("fhs",                     "CUSTOM FURNITURE"),   # Full Height Storage
-        ("lhs",                     "CUSTOM FURNITURE"),   # Low Height Storage
-        ("ohs",                     "CUSTOM FURNITURE"),   # Over Head Storage
-        ("wall paneling",           "CUSTOM FURNITURE"),
-        ("wall panelling",          "CUSTOM FURNITURE"),
-        ("storage",                 "CUSTOM FURNITURE"),
         # Carpentry doors (wooden / flush / solid) — stay in FURNITURE
         ("solid flush door",        "CUSTOM FURNITURE"),
         ("flush door",              "CUSTOM FURNITURE"),
@@ -227,7 +237,7 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("break out",               "LOOSE FURNITURE"),
         ("outdoor furniture",       "LOOSE FURNITURE"),
         ("seating stool",           "LOOSE FURNITURE"),
-        # CHAIRS
+        # CHAIRS (after LOOSE FURNITURE so "cafe chair" is caught first)
         ("high back chair",         "CHAIRS"),
         ("medium back chair",       "CHAIRS"),
         ("executive chair",         "CHAIRS"),
@@ -240,6 +250,7 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("gaming chair",            "CHAIRS"),
         ("mesh chair",              "CHAIRS"),
         ("wings mesh",              "CHAIRS"),
+        ("cafeteria chair",         "CHAIRS"),
         ("high chair",              "CHAIRS"),
         ("chair",                   "CHAIRS"),
     ],
@@ -264,12 +275,19 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("carpet",                  "TEXTILE FLOORING"),
         ("rug",                     "TEXTILE FLOORING"),
         ("flocked flooring",        "TEXTILE FLOORING"),
+        # RAISED FLOORING
+        ("raised floor",            "RAISED FLOORING"),
+        ("raised flooring",         "RAISED FLOORING"),
+        # FLOOR LEVELLING
+        ("floor levelling",         "FLOOR LEVELLING"),
+        ("floor leveling",          "FLOOR LEVELLING"),
+        ("ips",                     "FLOOR LEVELLING"),
+        ("pcc",                     "FLOOR LEVELLING"),
         # RESILIENT FLOORING
         ("laminated wooden flooring","RESILIENT FLOORING"),
         ("wooden flooring",         "RESILIENT FLOORING"),
         ("rubber flooring",         "RESILIENT FLOORING"),
         ("linoleum",                "RESILIENT FLOORING"),
-        ("raised floor",            "RESILIENT FLOORING"),
         ("anti static flooring",    "RESILIENT FLOORING"),
         ("antistatic flooring",     "RESILIENT FLOORING"),
         ("antistatic",              "RESILIENT FLOORING"),
@@ -288,16 +306,19 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("gypsum",                  "GYPSUM CEILING"),
         ("open cell ceiling",       "METAL CEILING"),
         ("open cell",               "METAL CEILING"),
-        ("baffle ceiling",          "METAL CEILING"),
+        ("metal baffle",            "METAL CEILING"),
         ("linear ceiling",          "METAL CEILING"),
         ("axiom trim",              "METAL CEILING"),
         ("modular tile ceiling",    "METAL CEILING"),
         ("metal ceiling",           "METAL CEILING"),
         ("grid ceiling",            "METAL CEILING"),
+        # Wooden baffles/open cell → WOOD CEILING
         ("wooden open cell",        "WOOD CEILING"),
         ("wooden baffle",           "WOOD CEILING"),
+        ("baffle ceiling",          "WOOD CEILING"),   # default baffle = wooden
+        ("wood ceiling",            "WOOD CEILING"),   # explicit wood ceiling type
+        # Decorative ceiling finishes
         ("wooden ceiling",          "DECORATIVE CEILING"),
-        ("wood ceiling",            "DECORATIVE CEILING"),
         ("stretch ceiling",         "DECORATIVE CEILING"),
         ("sunlight ceiling",        "DECORATIVE CEILING"),
         ("cove ceiling",            "DECORATIVE CEILING"),
@@ -313,7 +334,11 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("phenolic partition",      "PARTITION"),
         ("phenolic",                "PARTITION"),
         ("partition",               "PARTITION"),
+        # Doors — longer/more-specific phrases first to beat "partition" in product names
         ("toilet flush door",       "DOORS"),
+        ("washroom door",           "DOORS"),   # "Male & Female Washroom Door" etc.
+        ("toilet door",             "DOORS"),
+        ("wc door",                 "DOORS"),
         ("double leaf glass door",  "DOORS"),
         ("glass door",              "DOORS"),
         ("wooden door",             "DOORS"),
@@ -393,7 +418,7 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
     ],
 
     "CIVIL": [
-        # SANITARY FIXTURES
+        # SANITARY FIXTURES (always → CIVIL)
         ("water closet",            "SANITARY FIXTURES"),
         ("wash basin",              "SANITARY FIXTURES"),
         ("washbasin",               "SANITARY FIXTURES"),
@@ -440,6 +465,30 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("fabricated structure",    "FABRICATION"),
         ("ms fabrication",          "FABRICATION"),
         ("fabrication",             "FABRICATION"),
+        # WET WORKS
+        ("waterproofing",           "WET WORKS"),
+        ("water proofing",          "WET WORKS"),
+        ("epoxy flooring",          "WET WORKS"),
+        ("screeding",               "WET WORKS"),
+        ("brick bat",               "WET WORKS"),
+        ("brick bat coba",          "WET WORKS"),
+        # MASONARY WORKS
+        ("brick wall",              "MASONARY WORKS"),
+        ("siporex block",           "MASONARY WORKS"),
+        ("wall plaster",            "MASONARY WORKS"),
+        ("wall punning",            "MASONARY WORKS"),
+        ("ceiling plaster",         "MASONARY WORKS"),
+        ("exposed brick",           "MASONARY WORKS"),
+        ("platform",                "MASONARY WORKS"),
+        # DEMOLITION AND DISMANTLING
+        ("demolition",              "DEMOLITION AND DISMANTLING"),
+        ("dismantling",             "DEMOLITION AND DISMANTLING"),
+        ("dismantlement",           "DEMOLITION AND DISMANTLING"),
+        ("debris removal",          "DEMOLITION AND DISMANTLING"),
+        ("core cutting",            "DEMOLITION AND DISMANTLING"),
+        # PLUMBING
+        ("internal plumbing",       "PLUMBING"),
+        ("plumbing",                "PLUMBING"),
     ],
 
     "PAINT": [
@@ -451,12 +500,15 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
     ],
 
     "LIGHTING": [
+        # ACOUSTIC LIGHTS
         ("acoustic linear light",   "ACOUSTIC LIGHTS"),
         ("acoustic moulded light",  "ACOUSTIC LIGHTS"),
         ("acoustic pendant light",  "ACOUSTIC LIGHTS"),
         ("acoustic light",          "ACOUSTIC LIGHTS"),
+        # DECORATIVE LIGHTS — pendant/chandelier/floor lamps/decorative named
         ("linear suspension light", "DECORATIVE LIGHTS"),
         ("linear suspended light",  "DECORATIVE LIGHTS"),
+        ("linear suspended",        "DECORATIVE LIGHTS"),
         ("decorative linear light", "DECORATIVE LIGHTS"),
         ("rectangular linear light","DECORATIVE LIGHTS"),
         ("suspended cylindrical",   "DECORATIVE LIGHTS"),
@@ -466,9 +518,10 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("table lamp",              "DECORATIVE LIGHTS"),
         ("wall sconce",             "DECORATIVE LIGHTS"),
         ("wall light",              "DECORATIVE LIGHTS"),
-        ("cove light",              "DECORATIVE LIGHTS"),
         ("outdoor lighting",        "DECORATIVE LIGHTS"),
+        ("decorative hanging",      "DECORATIVE LIGHTS"),
         ("decorative light",        "DECORATIVE LIGHTS"),
+        # AMBIENT LIGHTS — functional general-purpose lighting
         ("concealed led",           "AMBIENT LIGHTS"),
         ("surface led panel",       "AMBIENT LIGHTS"),
         ("led panel light",         "AMBIENT LIGHTS"),
@@ -477,17 +530,23 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("led strip light",         "AMBIENT LIGHTS"),
         ("led flexible",            "AMBIENT LIGHTS"),
         ("led linear light",        "AMBIENT LIGHTS"),
+        ("led linear profile",      "AMBIENT LIGHTS"),  # recessed LED linear profile
+        ("linear profile light",    "AMBIENT LIGHTS"),
+        ("led profile light",       "AMBIENT LIGHTS"),
+        ("profile light",           "AMBIENT LIGHTS"),
         ("cob light",               "AMBIENT LIGHTS"),
+        ("hanging spot",            "AMBIENT LIGHTS"),
+        ("spot light",              "AMBIENT LIGHTS"),
         ("led spot light",          "AMBIENT LIGHTS"),
+        ("recessed led",            "AMBIENT LIGHTS"),
         ("led surface light",       "AMBIENT LIGHTS"),
         ("led recessed",            "AMBIENT LIGHTS"),
         ("recess mounted",          "AMBIENT LIGHTS"),
         ("surface mounted",         "AMBIENT LIGHTS"),
         ("panel light",             "AMBIENT LIGHTS"),
         ("down light",              "AMBIENT LIGHTS"),
-        ("led profile light",       "ARCHITECTURAL LIGHTS"),
-        ("linear profile light",    "ARCHITECTURAL LIGHTS"),
-        ("profile light",           "ARCHITECTURAL LIGHTS"),
+        ("cove light",              "AMBIENT LIGHTS"),  # cove = indirect ambient, not decorative
+        # ARCHITECTURAL LIGHTS — custom/designer/magnetic profiles
         ("magnetic light",          "ARCHITECTURAL LIGHTS"),
         ("led magnetic",            "ARCHITECTURAL LIGHTS"),
         ("led cabinet",             "ARCHITECTURAL LIGHTS"),
@@ -512,42 +571,60 @@ _SUBCAT_PHRASES_BY_CAT: dict[str, list[tuple[str, str]]] = {
         ("movable wall",            "WALL SOLUTIONS"),
         ("plain panel",             "WALL SOLUTIONS"),
         ("print panel",             "WALL SOLUTIONS"),
+        ("fluted panel",            "WALL SOLUTIONS"),
     ],
 }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Row-level hint normaliser  (e.g. "Furniture Type" column values)
+# Row-level hint normaliser  (e.g. "Furniture Type" column, "Wall/Ceiling/Slab" column)
 # ══════════════════════════════════════════════════════════════════════════════
 _ROW_HINT_NORMALISE: list[tuple[str, str]] = [
+    # FURNITURE
     ("carpent",             "CUSTOM FURNITURE"),
     ("custom",              "CUSTOM FURNITURE"),
     ("modular",             "MODULAR FURNITURE"),
     ("loose",               "LOOSE FURNITURE"),
     ("chair",               "CHAIRS"),
+    # FLOORING
     ("tile flooring",       "TILE FLOORING"),
     ("textile",             "TEXTILE FLOORING"),
     ("resilient",           "RESILIENT FLOORING"),
-    ("skirting",            "SKIRTING AND PROFILE"),
+    ("raised floor",        "RAISED FLOORING"),
+    # CEILING
     ("gypsum ceiling",      "GYPSUM CEILING"),
     ("metal ceiling",       "METAL CEILING"),
     ("decorative ceiling",  "DECORATIVE CEILING"),
     ("wood ceiling",        "WOOD CEILING"),
+    # PARTITIONS AND DOORS
     ("glass partition",     "GLASS PARTITION"),
     ("partition",           "PARTITION"),
     ("doors",               "DOORS"),
     ("door",                "DOORS"),
     ("windows",             "WINDOWS"),
+    # DECORATIVES
+    ("skirting",            "SKIRTING AND PROFILE"),
     ("blind",               "BLIND"),
     ("graphics",            "GRAPHICS"),
     ("panelling",           "PANELLING"),
     ("signage",             "SIGNAGES AND BRANDING"),
     ("branding",            "SIGNAGES AND BRANDING"),
+    # SURFACE AND FINISHES
     ("wooden",              "WOODEN"),
     ("laminate",            "WOODEN"),
     ("veneer",              "WOODEN"),
+    # CIVIL
     ("sanitary",            "SANITARY FIXTURES"),
     ("fabrication",         "FABRICATION"),
+    # PAINT — "Wall/Ceiling/Slab" column values
+    ("ceiling paint",       "CEILING PAINT"),
+    ("wall paint",          "WALL PAINT"),
+    ("duco",                "DUCO PAINT"),
+    ("duct",                "DUCT PAINT"),
+    ("texture",             "TEXTURE PAINT"),
+    ("ceiling",             "CEILING PAINT"),   # e.g. column C = "Ceiling"
+    ("wall",                "WALL PAINT"),       # e.g. column C = "Wall"
+    ("slab",                "WALL PAINT"),       # slab/floor paint treated as wall
 ]
 
 
@@ -571,8 +648,6 @@ def _composite(description: str, areas: str, product_name: str, sub_hint: str) -
     return _norm(" ".join(p for p in (description, areas, product_name, sub_hint) if p))
 
 
-# Location words that mark a parenthetical group as pure location context,
-# e.g. "LHS 5 (WORKSTATION AREA)", "LHS (NEAR MEDICAL ROOM)", "(LOBBY AREA)".
 _LOC_WORDS = (
     "area", "areas", "room", "lobby", "near", "behind", "floor", "cabin",
     "zone", "passage", "entrance", "washroom", "secretary", "mandir",
@@ -581,28 +656,29 @@ _LOC_WORDS = (
 
 
 def _strip_locations(text: str) -> str:
-    """Remove parenthetical groups that are purely location context, so a
-    location name (e.g. 'WORKSTATION AREA') cannot drive the sub-category.
-    A parenthetical is dropped only if it contains a location word; otherwise
-    it is kept (e.g. '(W/S - 06)', '(TYPE 1)')."""
+    """Remove parenthetical groups that are purely location context."""
     def _repl(m):
         inner = m.group(1).lower()
         return " " if any(w in inner for w in _LOC_WORDS) else m.group(0)
     return re.sub(r"\(([^)]*)\)", _repl, text or "")
 
 
+def _kw_text(description: str, product_name: str) -> str:
+    """Text for Signal 2 keyword matching: description + product name ONLY.
+    Sub_hint is deliberately excluded to prevent the sheet hint value
+    (e.g. 'METAL CEILING', 'PARTITION') from contaminating keyword matches."""
+    raw = " ".join(p for p in (description, product_name) if p)
+    return _norm(_strip_locations(raw))
+
+
 def _subcat_text(description: str, product_name: str, sub_hint: str) -> str:
-    """Text used for SUB-CATEGORY detection: description + product name + sheet
-    hint ONLY (the area column is deliberately excluded), with parenthetical
-    location qualifiers stripped.  This stops a row's location ('WORKSTATION
-    AREA', 'RECEPTION AREA') from contaminating its sub-category."""
+    """Full sub-category detection text incl. sub_hint — used for override
+    detection (STEP 0) and master item matching (Signal 3)."""
     raw = " ".join(p for p in (description, product_name, sub_hint) if p)
     return _norm(_strip_locations(raw))
 
 
 def _valid_subs_for(category: str, master_for_category: list) -> set:
-    """Authoritative set of valid sub-categories for a category.
-    Prefer the live master slice; fall back to the hard-coded taxonomy."""
     live = {(m["Sub-category"] or "").upper() for m in master_for_category if m.get("Sub-category")}
     if live:
         return live
@@ -610,11 +686,7 @@ def _valid_subs_for(category: str, master_for_category: list) -> set:
 
 
 def _signal_keyword(text: str, category: str, valid_subs: set) -> tuple[Optional[str], int]:
-    """
-    Signal 2 — phrase keyword match, SCOPED to the determined category.
-    Only scans the phrase block for `category`, so a sub-category can never leak
-    in from another category.  Longest matching phrase wins.
-    """
+    """Signal 2 — phrase keyword match, category-scoped, description-only text."""
     phrases = _SUBCAT_PHRASES_BY_CAT.get((category or "").upper(), [])
     best_sub, best_len = None, 0
     for phrase, sub in phrases:
@@ -631,10 +703,7 @@ def _signal_master_items(
     candidates: list,
     sub_hint: str,
 ) -> tuple[Optional[str], Optional[str], int]:
-    """
-    Signal 3 — master item-name similarity, naturally scoped to the category
-    because `candidates` is already filtered to that category's master rows.
-    """
+    """Signal 3 — master item-name similarity (uses full text incl. sub_hint)."""
     desc_tokens = {_light_stem(t) for t in text.split() if len(t) >= 3}
     best, best_pts = None, 0
 
@@ -666,7 +735,9 @@ def _signal_master_items(
 
 
 def _signal_row_hint(raw_hint: str, valid_subs: set) -> tuple[Optional[str], int]:
-    """Signal 1 — explicit sub-cat hint from a GFC column (e.g. 'Furniture Type')."""
+    """Signal 1 — explicit sub-cat hint from a GFC column (e.g. 'Furniture Type',
+    'Wall/Ceiling/Slab').  Only fires if the resulting sub-category is valid for
+    the current category."""
     if not raw_hint:
         return None, 0
     r = _norm(raw_hint)
@@ -704,8 +775,8 @@ def classify_line_item(
     """
     Engine 1 — classify a single GFC line item against the Category Master.
 
-    The sub-category is ALWAYS constrained to the (possibly overridden) category's
-    own sub-categories.  If no valid sub-category is found it is left blank.
+    KEY CHANGE: Signal 2 (keyword) now uses description + product_name ONLY
+    (no sub_hint) to prevent the sheet hint from contaminating keyword matches.
     """
     result = ClassificationResult(category=category)
 
@@ -714,16 +785,15 @@ def classify_line_item(
         result.signals = ["L1 did not assign a category — cannot classify"]
         return result
 
-    # Sub-category detection text = description + product + sheet hint ONLY
-    # (area column excluded, parenthetical location qualifiers stripped).
-    # `composite` (with area) is retained only for category-context purposes.
-    sc_text   = _subcat_text(description, product_name, sub_hint or "")
-    composite = sc_text
+    # kw_text: description + product_name only — for Signal 2 keyword matching.
+    # full_text: includes sub_hint — for category override (STEP 0) and Signal 3.
+    kw_text   = _kw_text(description, product_name)
+    full_text  = _subcat_text(description, product_name, sub_hint or "")
     signals   = []
     override_sub = None
 
-    # ── STEP 0: Category override ─────────────────────────────────────────
-    ov = _apply_category_override(sc_text)
+    # ── STEP 0: Category override (checks full_text incl. sub_hint) ───────
+    ov = _apply_category_override(full_text)
     if ov and master_by_cat is not None:
         trigger, new_cat, new_sub = ov
         if new_cat.upper() != (category or "").upper():
@@ -741,13 +811,13 @@ def classify_line_item(
     if s1_sub:
         signals.append(f"S1_row_hint→'{s1_sub}'({s1_conf})")
 
-    s2_sub, s2_conf = _signal_keyword(composite, category, valid_subs)
+    # Signal 2 uses kw_text (no sub_hint) to avoid circular contamination
+    s2_sub, s2_conf = _signal_keyword(kw_text, category, valid_subs)
     if s2_sub:
         signals.append(f"S2_keyword→'{s2_sub}'({s2_conf})")
 
     s3_sub, s3_item, s3_conf = _signal_master_items(
-        composite, master_for_category, sub_hint or "")
-    # Guard Signal 3 against the category constraint too
+        full_text, master_for_category, sub_hint or "")
     if s3_sub and s3_sub.upper() not in valid_subs:
         s3_sub, s3_conf = None, 0
     if s3_sub:
@@ -773,6 +843,24 @@ def classify_line_item(
     candidates = [(s, c, m) for s, c, m in candidates if s and c > 0]
 
     if not candidates:
+        # ── STEP 4a: ACOUSTIC — use area column for ceiling vs wall distinction ──
+        if (category or "").upper() == "ACOUSTIC" and areas:
+            area_n = _norm(areas)
+            if "ceiling" in area_n:
+                result.category   = category
+                result.subcategory = "CEILING"
+                result.confidence = 60
+                result.method     = "area_hint"
+                result.signals    = signals + [f"ACOUSTIC area_hint→CEILING (area='{areas}')"]
+                return result
+            elif any(w in area_n for w in ("wall", "column", "partition", "pillar")):
+                result.category   = category
+                result.subcategory = "WALL SOLUTIONS"
+                result.confidence = 55
+                result.method     = "area_hint"
+                result.signals    = signals + [f"ACOUSTIC area_hint→WALL SOLUTIONS (area='{areas}')"]
+                return result
+
         result.category   = category
         result.method     = "category_only"
         result.confidence = 28
@@ -792,7 +880,7 @@ def classify_line_item(
             primary_conf = max(0, primary_conf - 8)
             signals.append(f"conflict_penalty:-8(vs '{second_sub}')")
 
-    # ── STEP 3: hard guard — sub-category MUST belong to the category ─────
+    # ── STEP 3: hard guard ────────────────────────────────────────────────
     if primary_sub.upper() not in valid_subs:
         result.category   = category
         result.subcategory = None

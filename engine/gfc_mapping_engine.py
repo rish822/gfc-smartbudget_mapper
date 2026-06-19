@@ -75,18 +75,18 @@ SHEET_RULES = [
 
     # ── CEILING ───────────────────────────────────────────────────────────
     (("open", "cell"),              "CEILING",              "METAL CEILING"),
-    (("baffle", "ceiling"),         "CEILING",              "METAL CEILING"),
+    (("baffle", "ceiling"),         "CEILING",              "WOOD CEILING"),  # baffles default to wooden
     (("ceiling",),                  "CEILING",              None),
 
     # ── PAINT ─────────────────────────────────────────────────────────────
     (("paint",),                    "PAINT",                None),
 
     # ── ACOUSTIC ──────────────────────────────────────────────────────────
-    # Specific rules BEFORE the generic "acoustic" catch-all.
-    # Acoustic PANELS used as wall treatment = DECORATIVES, not ACOUSTIC category.
-    (("acoustic", "panel"),         "DECORATIVES",          "ACOUSTIC WALL SOLUTIONS"),
-    (("acoustic", "wall"),          "DECORATIVES",          "ACOUSTIC WALL SOLUTIONS"),
-    (("accoustic", "panel"),        "DECORATIVES",          "ACOUSTIC WALL SOLUTIONS"),
+    # "Acoustic Panel" sheets = ACOUSTIC category (functional sound absorption).
+    # Decorative panels with acoustic properties on wall/panelling sheets stay DECORATIVES.
+    (("acoustic", "panel"),         "ACOUSTIC",             None),
+    (("acoustic", "wall"),          "ACOUSTIC",             "WALL SOLUTIONS"),
+    (("accoustic", "panel"),        "ACOUSTIC",             None),
     (("acoustic",),                 "ACOUSTIC",             None),
     (("accoustic",),                "ACOUSTIC",             None),
 
@@ -175,9 +175,11 @@ FIELD_ALIASES = {
                      "discription", "product", "details", "details (dimension drawing)",
                      "description - scope of work", "item of work",
                      "scope", "work description", "particulars"},
-    "subcat_hint":  {"furniture type"},
+    "subcat_hint":  {"furniture type",
+                     "wall/ ceiling / slab", "wall ceiling slab",
+                     "wall/ceiling/slab", "surface type", "surface"},
     "areas":        {"areas", "area", "location", "room", "space",
-                     "location as per layout/on-site", "wall/ ceiling / slab",
+                     "location as per layout/on-site",
                      "location/area", "location as per layout on-site"},
     "size":         {"size", "size in inch & feet", "size (l x d x h)", "dimension",
                      "dimensions", "size in inch", "size in feet", "dia/size",
